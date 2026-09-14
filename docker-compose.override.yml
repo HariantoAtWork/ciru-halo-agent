@@ -1,0 +1,21 @@
+networks:
+  cfp:
+    external: true
+  cloudflared:
+    external: true
+  tsdproxy:
+    external: true
+
+services:
+  ciru-halo-agent:
+    networks:
+      - cfp
+      - cloudflared
+      - tsdproxy
+    labels:
+      tsdproxy.enable: "true"
+      tsdproxy.name: "ciru-halo-agent"
+      tsdproxy.port.1: "443/https:8000/http"
+      tsdproxy.port.2: "8000/http:8000/http"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

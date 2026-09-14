@@ -1,0 +1,12 @@
+# Overlay for Hub multi-arch publishes (self-contained; not merged with _build.yml).
+# Multi-arch cannot be loaded into the local Docker engine, so local
+# `docker:build` stays on _build.yml only.
+services:
+  ciru-halo-agent:
+    build:
+      context: build/ciru-halo-agent
+      dockerfile: Dockerfile.platform
+      platforms:
+        - linux/amd64
+        - linux/arm64
+    image: harianto/ciru-halo-agent:${CIRU_TAG:-vision}

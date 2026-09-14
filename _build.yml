@@ -1,0 +1,6 @@
+services:
+  ciru-halo-agent:
+    build:
+      context: build/ciru-halo-agent
+      dockerfile: Dockerfile
+    image: harianto/ciru-halo-agent:${CIRU_TAG:-vision}

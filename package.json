@@ -1,0 +1,15 @@
+{
+  "name": "ciru-halo-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "docker:build": "docker compose -f _build.yml build",
+    "docker:push": "docker compose -f _push.yml build --no-cache --push",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f ciru-halo-agent",
+    "host:install": "build/ciru-halo-agent/install-host.sh",
+    "host:smoke": "/home/ciru/smoke-gpu.sh",
+    "host:serve": "/home/ciru/serve-vision.sh"
+  }
+}
