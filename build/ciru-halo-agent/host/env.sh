@@ -32,7 +32,7 @@ export VLLM_VENV="${ORNITH_RUNTIME_ROOT}/venv"
 export AITER_SOURCE="${ORNITH_RUNTIME_ROOT}/aiter"
 
 # Optional HF token from the project .env (not required for this public repo).
-_env_file="${CIRU_DOTENV:-/docker/unsloth-amd/.env}"
+_env_file="${CIRU_DOTENV:-/docker/ciru-halo-agent/.env}"
 if [[ -z "${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}" && -f "${_env_file}" ]]; then
   # shellcheck disable=SC1090
   set -a
