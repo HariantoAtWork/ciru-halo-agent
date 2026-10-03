@@ -37,6 +37,16 @@ chmod +x \
 
 mkdir -p "${BUNDLE_ROOT}/bundle/cache"
 
+# Ornith worker creates optimized-runtime/<pid> with exist_ok=False; restarts
+# reuse PIDs and crash on FileExistsError unless leftovers are cleared first.
+cache_root="${ORNITH_OPTIMIZED_CACHE:-${BUNDLE_ROOT}/bundle/cache}"
+audit_root="${cache_root}/optimized-runtime"
+mkdir -p "${audit_root}"
+if compgen -G "${audit_root}/*" >/dev/null; then
+  echo "==> Clearing stale Ornith optimized-runtime PID dirs under ${audit_root}"
+  rm -rf "${audit_root:?}/"*
+fi
+
 if [[ "${CIRU_SKIP_GPU_SMOKE:-0}" != "1" ]]; then
   echo "==> GPU smoke test (torch.zeros on cuda)"
   set +e

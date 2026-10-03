@@ -1,0 +1,9 @@
+# Usage on Alpine YOLO (no cloudflared/tsdproxy nets required):
+#   docker compose --env-file .env.alpine -f docker-compose.yml -f docker-compose.alpine.yml up -d
+#
+# Publishes Ciru on host port 8000. Add cloudflared override later when those nets exist.
+
+services:
+  ciru-halo-agent:
+    ports:
+      - "${CIRU_PORT:-8000}:${CIRU_PORT:-8000}"

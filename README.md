@@ -44,3 +44,15 @@ Details: [build/ciru-halo-agent/host/README.md](build/ciru-halo-agent/host/READM
 | `ciru-uv` | `/root/.local/share` | uv-managed CPython |
 
 Volume names are fixed so data from the former layout under `/docker/unsloth-amd` keeps working.
+
+## Host install (Alpine YOLO)
+
+On Alpine Edge with YOLO 7.2.6 (GPD WIN 5):
+
+```bash
+# GIDs for Alpine video/render (see .env.alpine)
+docker compose --env-file .env.alpine -f docker-compose.yml -f docker-compose.alpine.yml up -d
+# or: ciru-compose-smoke
+```
+
+Host needs `/dev/kfd` + `/dev/dri` (`amdgpu`). Setup stages / GRUB menu: `/home/ISO/alpine-win5-overlay/`.

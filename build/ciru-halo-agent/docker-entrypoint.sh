@@ -129,6 +129,18 @@ _gpu_smoke() {
     fi
 }
 
+_clear_stale_optimized_runtime() {
+    # Ornith worker creates optimized-runtime/<pid> with exist_ok=False.
+    # Restarts reuse low PIDs inside the container, so leftover dirs crash load_model.
+    local cache_root="${ORNITH_OPTIMIZED_CACHE:-${BUNDLE_ROOT}/bundle/cache}"
+    local audit_root="${cache_root}/optimized-runtime"
+    mkdir -p "${audit_root}"
+    if compgen -G "${audit_root}/*" >/dev/null; then
+        echo "==> Clearing stale Ornith optimized-runtime PID dirs under ${audit_root}"
+        rm -rf "${audit_root:?}/"*
+    fi
+}
+
 
 # Allow overriding the command (bash, serve.sh text-only, etc.).
 if [[ "${1:-}" != "serve-vision" && "${1:-}" != "serve" && -n "${1:-}" ]]; then
@@ -158,6 +170,7 @@ _gpu_smoke
 
 # Writable cache next to the bundle (prefix / AITER JIT).
 mkdir -p "${BUNDLE_ROOT}/bundle/cache"
+_clear_stale_optimized_runtime
 
 case "${PROFILE}" in
     serve-vision)
