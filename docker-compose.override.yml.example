@@ -1,16 +1,10 @@
 networks:
-  cfp:
-    external: true
-  cloudflared:
-    external: true
   tsdproxy:
     external: true
 
 services:
   ciru-halo-agent:
     networks:
-      - cfp
-      - cloudflared
       - tsdproxy
     labels:
       tsdproxy.enable: "true"

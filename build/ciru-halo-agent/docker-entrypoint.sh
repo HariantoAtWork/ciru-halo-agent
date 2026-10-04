@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 # First-boot: download Ciru Halo Agent bundle + install pinned ROCm10 runtime,
 # then launch the vision OpenAI-compatible server (serve-vision).
+# Later starts: refresh plugin/native/launchers when behind CIRU_TARGET_BUNDLE_VERSION.
 set -euo pipefail
 
 export PATH="/root/.local/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:${PATH}}"
 
 # Empty CUDA_VISIBLE_DEVICES still trips ROCm; prefer HIP_* only.
 unset CUDA_VISIBLE_DEVICES || true
+# Native gfx1151 — do not spoof GFX version unless explicitly forced.
+if [[ "${CIRU_FORCE_HSA_OVERRIDE:-0}" != "1" ]]; then
+    unset HSA_OVERRIDE_GFX_VERSION || true
+fi
 export HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-0}"
 export ROCR_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES:-0}"
-export HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.5.1}"
 export HSA_ENABLE_SDMA="${HSA_ENABLE_SDMA:-0}"
-export HSA_USE_SVM="${HSA_USE_SVM:-0}"
+export HSA_USE_SVM="${HSA_USE_SVM:-1}"
+export HSA_XNACK="${HSA_XNACK:-1}"
 export HSA_ENABLE_INTERRUPT="${HSA_ENABLE_INTERRUPT:-0}"
 export PYTORCH_ROCM_ARCH="${PYTORCH_ROCM_ARCH:-gfx1151}"
 export GPU_ARCHS="${GPU_ARCHS:-gfx1151}"
+export AMD_SERIALIZE_KERNEL="${AMD_SERIALIZE_KERNEL:-3}"
 
 BUNDLE_ROOT="${CIRU_BUNDLE_ROOT:-/opt/ciru-halo-agent}"
 # Install into a *subdir* of the volume. Ciru's installer refuses any existing
@@ -25,6 +31,8 @@ HF_REPO="${HF_REPO:-jcbtc/Ornith1.5-Ciru-Halo-Agent-vllm-strix-halo}"
 HOST="${CIRU_HOST:-0.0.0.0}"
 PORT="${CIRU_PORT:-8000}"
 MARKER="${RUNTIME_ROOT}/.docker-runtime-complete"
+# Ciru v4.1.1 — plugin/native/launcher refresh; weights + pinned wheels unchanged.
+TARGET_VERSION="${CIRU_TARGET_BUNDLE_VERSION:-4.1.1}"
 
 mkdir -p "${BUNDLE_ROOT}" "${RUNTIME_VOLUME}"
 
@@ -46,6 +54,15 @@ _fix_bundle_scripts() {
         2>/dev/null || true
 }
 
+_hf_token_setup() {
+    if [[ -n "${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}" ]]; then
+        export HF_TOKEN="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN}}"
+        echo "    using HF_TOKEN for authenticated Hub downloads"
+    else
+        echo "    tip: set HF_TOKEN for higher Hub rate limits (optional; not required for this public repo)"
+    fi
+}
+
 _download_bundle() {
     if [[ "${CIRU_SKIP_DOWNLOAD:-0}" == "1" ]]; then
         echo "ERROR: Ciru bundle missing under ${BUNDLE_ROOT} and CIRU_SKIP_DOWNLOAD=1" >&2
@@ -53,16 +70,119 @@ _download_bundle() {
     fi
     echo "==> Downloading ${HF_REPO} into ${BUNDLE_ROOT}"
     echo "    (model assets ~24 GB; allow 60 GB+ free disk per Ciru INSTALL.md)"
-    if [[ -n "${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}" ]]; then
-        export HF_TOKEN="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN}}"
-        echo "    using HF_TOKEN for authenticated Hub downloads"
-    else
-        echo "    tip: set HF_TOKEN for higher Hub rate limits (optional; not required for this public repo)"
-    fi
+    _hf_token_setup
     # Download into the mount root. huggingface_hub writes files in-place.
     uvx --from huggingface_hub hf download \
         "${HF_REPO}" \
         --local-dir "${BUNDLE_ROOT}"
+}
+
+_bundle_version() {
+    # Prefer installed plugin metadata over RELEASE.json — a partial Hub
+    # download can update RELEASE.json without refreshing plugin-site.
+    local ver=""
+    local dist
+    dist="$(compgen -G "${BUNDLE_ROOT}/bundle/plugin-site/ciru_ornith_g256-"*.dist-info | sort -V | tail -n1 || true)"
+    if [[ -n "${dist}" ]]; then
+        ver="$(basename "${dist}" | sed -E 's/^ciru_ornith_g256-([0-9.]+)\.dist-info$/\1/')"
+    elif [[ -f "${BUNDLE_ROOT}/RELEASE.json" ]]; then
+        ver="$(
+            python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' \
+                "${BUNDLE_ROOT}/RELEASE.json" 2>/dev/null || true
+        )"
+    fi
+    printf '%s' "${ver}"
+}
+
+_target_plugin_ready() {
+    [[ -d "${BUNDLE_ROOT}/bundle/plugin-site/ciru_ornith_g256-${TARGET_VERSION}.dist-info" ]] \
+        && [[ -f "${BUNDLE_ROOT}/bundle/native/shared_math_reference.json" ]] \
+        && [[ -f "${BUNDLE_ROOT}/bundle/native/shared_math_reference.safetensors" ]] \
+        && [[ -f "${BUNDLE_ROOT}/RELEASE.json" ]]
+}
+
+_version_lt() {
+    # Return 0 if $1 < $2 (sort -V). Empty left side counts as older.
+    local left="${1:-}"
+    local right="${2:-}"
+    if [[ -z "${left}" ]]; then
+        return 0
+    fi
+    if [[ "${left}" == "${right}" ]]; then
+        return 1
+    fi
+    [[ "$(printf '%s\n' "${left}" "${right}" | sort -V | head -n1)" == "${left}" ]]
+}
+
+_cleanup_old_dist_info() {
+    local keep="ciru_ornith_g256-${TARGET_VERSION}.dist-info"
+    local dir
+    shopt -s nullglob
+    for dir in "${BUNDLE_ROOT}/bundle/plugin-site"/ciru_ornith_g256-*.dist-info; do
+        if [[ "$(basename "${dir}")" != "${keep}" ]]; then
+            echo "==> Removing stale plugin metadata $(basename "${dir}")"
+            rm -rf "${dir}"
+        fi
+    done
+    shopt -u nullglob
+}
+
+_refresh_bundle_runtime() {
+    # INSTALL.md 4.1.1: plugin + native (+ shared_math_reference) + packaging + launchers.
+    # Weights and pinned engine wheels stay on the volume.
+    if [[ "${CIRU_SKIP_DOWNLOAD:-0}" == "1" ]]; then
+        echo "ERROR: bundle runtime update required but CIRU_SKIP_DOWNLOAD=1" >&2
+        exit 1
+    fi
+    local current
+    current="$(_bundle_version)"
+    echo "==> Refreshing Ciru plugin/native/launchers to ${TARGET_VERSION} (have: ${current:-none})"
+    _hf_token_setup
+    # Newer hf CLI treats bare args after one --include as filenames and
+    # ignores the filter. Pass one --include per pattern.
+    uvx --from huggingface_hub hf download \
+        "${HF_REPO}" \
+        --include 'bundle/plugin-site/*' \
+        --include 'bundle/native/*' \
+        --include 'bundle/serve*.sh' \
+        --include 'bundle/packaging/*' \
+        --include 'README.md' \
+        --include 'INSTALL.md' \
+        --include 'RUNTIME-FIXES.md' \
+        --include 'RELEASE.json' \
+        --include 'CREDITS.md' \
+        --include 'evaluation/*' \
+        --include 'runtime/ciru-v4-ornith-source.tar.gz' \
+        --local-dir "${BUNDLE_ROOT}"
+
+    if [[ ! -d "${BUNDLE_ROOT}/bundle/plugin-site/ciru_ornith_g256-${TARGET_VERSION}.dist-info" ]]; then
+        echo "ERROR: expected ciru_ornith_g256-${TARGET_VERSION}.dist-info after refresh" >&2
+        ls -la "${BUNDLE_ROOT}/bundle/plugin-site" 2>&1 || true
+        exit 1
+    fi
+    if [[ ! -f "${BUNDLE_ROOT}/bundle/native/shared_math_reference.json" ]] \
+        || [[ ! -f "${BUNDLE_ROOT}/bundle/native/shared_math_reference.safetensors" ]]; then
+        echo "ERROR: 4.1.1 requires both shared_math_reference files under bundle/native/" >&2
+        exit 1
+    fi
+    _cleanup_old_dist_info
+    local after
+    after="$(_bundle_version)"
+    echo "==> Bundle runtime now at ${after:-unknown}"
+}
+
+_ensure_bundle_version() {
+    local current
+    current="$(_bundle_version)"
+    if [[ "${CIRU_FORCE_BUNDLE_UPDATE:-0}" == "1" ]] \
+        || ! _target_plugin_ready \
+        || _version_lt "${current}" "${TARGET_VERSION}"; then
+        _refresh_bundle_runtime
+    else
+        echo "==> Ciru bundle runtime already at ${current} (>= ${TARGET_VERSION})"
+        # Still drop leftover older dist-info if a partial update left them behind.
+        _cleanup_old_dist_info
+    fi
 }
 
 _runtime_ready() {
@@ -114,6 +234,9 @@ _gpu_smoke() {
     # shellcheck source=/dev/null
     source "${RUNTIME_ROOT}/runtime-env.sh" >/dev/null 2>&1
     unset CUDA_VISIBLE_DEVICES || true
+    if [[ "${CIRU_FORCE_HSA_OVERRIDE:-0}" != "1" ]]; then
+        unset HSA_OVERRIDE_GFX_VERSION || true
+    fi
     "${RUNTIME_ROOT}/venv/bin/python" -u -c \
         'import torch; t=torch.zeros(256, device="cuda"); print("gpu-smoke-ok", float(t.sum()))'
     local rc=$?
@@ -162,6 +285,7 @@ if ! _have_bundle; then
     exit 1
 fi
 
+_ensure_bundle_version
 _fix_bundle_scripts
 
 export ORNITH_RUNTIME_ROOT="${RUNTIME_ROOT}"
